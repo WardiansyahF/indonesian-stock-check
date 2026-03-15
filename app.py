@@ -25,7 +25,8 @@ from modules.technical import (
 )
 from modules.prediction import (
     get_prediction_summary, get_trading_targets, get_confirmed_prediction,
-    get_entry_scenarios, predict_monte_carlo, get_fibonacci_levels, get_unified_confidence
+    get_entry_scenarios, predict_monte_carlo, get_fibonacci_levels, get_unified_confidence,
+    get_seasonal_returns
 )
 from modules.news import get_stock_news, get_external_news_links
 from modules.ai_assistant import (
@@ -131,6 +132,12 @@ def fetch_all(t, p):
     # Primary price data (selected period)
     price_df = get_price_history(t, p)
     
+    # v12: Market Context (IHSG)
+    try:
+        ihsg_df = get_price_history("^JKSE", p)
+    except:
+        ihsg_df = pd.DataFrame()
+        
     # v11: Always fetch 1-day intraday (5m) for internal signals
     try:
         intraday_df = get_price_history(t, "1d", interval="5m")
@@ -138,7 +145,7 @@ def fetch_all(t, p):
         intraday_df = pd.DataFrame()
         
     news = get_stock_news(t, max_items=5)
-    return info, ratios, financials, price_df, intraday_df, news
+    return info, ratios, financials, price_df, intraday_df, ihsg_df, news
 
 # ============================================================
 # MODE SCREENER (MULTIPLE STOCKS)
@@ -273,7 +280,7 @@ if not ticker:
 
 with st.spinner(f"⏳ Mengambil data **{ticker}**..."):
     try:
-        info, ratios, financials, price_df, intraday_df, news_items = fetch_all(ticker, period)
+        info, ratios, financials, price_df, intraday_df, ihsg_df, news_items = fetch_all(ticker, period)
     except Exception as e:
         st.error(f"❌ Gagal mengambil data: {str(e)}")
         st.stop()
@@ -293,6 +300,18 @@ confirmed = get_confirmed_prediction(prediction.get("linear", {}), signals, adv_
 entry_scenarios = get_entry_scenarios(price_df, signals, adv_signals)
 fibonacci = get_fibonacci_levels(price_df)
 unified_conf = get_unified_confidence(prediction.get("linear", {}), monte_carlo)
+seasonal_data = get_seasonal_returns(ticker)
+
+# v12: Market Relative Performance calculation
+market_perf = 0
+stock_perf = 0
+relative_perf = 0
+if not ihsg_df.empty and not price_df.empty:
+    ihsg_start = ihsg_df["Close"].iloc[0]; ihsg_end = ihsg_df["Close"].iloc[-1]
+    stock_start = price_df["Close"].iloc[0]; stock_end = price_df["Close"].iloc[-1]
+    market_perf = ((ihsg_end - ihsg_start) / ihsg_start) * 100
+    stock_perf = ((stock_end - stock_start) / stock_start) * 100
+    relative_perf = stock_perf - market_perf
 
 # Build technical context string for AI
 tech_context_lines = [
@@ -344,17 +363,50 @@ with tab1:
     with c2: st.markdown(f"<div class='mc'><div class='ml'>Market Cap</div><div class='mv'>{format_large_number(info.get('Market Cap',0))}</div></div>", unsafe_allow_html=True)
     with c3: st.markdown(f"<div class='mc'><div class='ml'>52W High</div><div class='mv grn'>Rp {info.get('52W High',0):,.0f}</div></div>", unsafe_allow_html=True)
     with c4: st.markdown(f"<div class='mc'><div class='ml'>52W Low</div><div class='mv red'>Rp {info.get('52W Low',0):,.0f}</div></div>", unsafe_allow_html=True)
-    d1,d2,d3 = st.columns(3)
-    with d1: st.markdown(f"<div class='mc'><div class='ml'>Sektor</div><div class='mv' style='font-size:1.1rem;'>{info.get('Sektor','N/A')}</div></div>", unsafe_allow_html=True)
-    with d2: st.markdown(f"<div class='mc'><div class='ml'>Industri</div><div class='mv' style='font-size:1.1rem;'>{info.get('Industri','N/A')}</div></div>", unsafe_allow_html=True)
-    with d3:
+
+    # v12: Market Context & Score Row
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(f"<div class='mc'><div class='ml'>Sektor</div><div class='mv' style='font-size:1.1rem;'>{info.get('Sektor','N/A')}</div></div>", unsafe_allow_html=True)
+    with m2:
+        st.markdown(f"<div class='mc'><div class='ml'>Industri</div><div class='mv' style='font-size:1.1rem;'>{info.get('Industri','N/A')}</div></div>", unsafe_allow_html=True)
+    with m3:
+        p_clr = "grn" if relative_perf > 0 else "red"
+        p_icon = "🚀" if relative_perf > 0 else "🥀"
+        st.markdown(f"<div class='mc'><div class='ml'>vs IHSG</div><div class='mv {p_clr}'>{p_icon} {relative_perf:+.2f}%</div><div style='color:#94a3b8;font-size:0.75rem;margin-top:4px;'>IHSG: {market_perf:+.1f}%</div></div>", unsafe_allow_html=True)
+    with m4:
         sc = adv_signals.get("composite_color","gray"); sv = adv_signals.get("composite_score",50); sl = adv_signals.get("composite_label","N/A")
-        st.markdown(f"<div class='mc'><div class='ml'>Composite Score</div><div class='mv {sc}' style='font-size:1.8rem;'>{sv}/100</div><div class='sb {sc}' style='margin-top:6px;'>{sl}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='mc'><div class='ml'>Composite Score</div><div class='mv {sc}'>{sv}/100</div><div class='sb {sc}' style='margin-top:6px;padding:4px 12px;font-size:0.75rem;'>{sl}</div></div>", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("<div class='sh'>📈 Grafik Harga</div>", unsafe_allow_html=True)
+    
+    # v12: External Deep Dive Links
+    st.markdown("<div class='sh'>🔗 Deep Dive Terkait</div>", unsafe_allow_html=True)
+    base_t = ticker.replace(".JK", "")
+    l1, l2, l3, l4 = st.columns(4)
+    with l1: st.link_button("📊 Stockbit", f"https://stockbit.com/symbol/{base_t}", use_container_width=True)
+    with l2: st.link_button("📈 TradingView", f"https://www.tradingview.com/symbols/IDX-{base_t}/", use_container_width=True)
+    with l3: st.link_button("🏢 RTI Business", f"https://www.rti.co.id/saham/{base_t}", use_container_width=True)
+    with l4: st.link_button("🌐 Yahoo Finance", f"https://finance.yahoo.com/quote/{ticker}", use_container_width=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<div class='sh'>📈 Grafik Harga & Market Relasi</div>", unsafe_allow_html=True)
     fig = go.Figure()
+    # v12: Normalized IHSG trace (Baseline to 100)
+    if not ihsg_df.empty and len(ihsg_df) > 0:
+        base_ihsg = ihsg_df["Close"].iloc[0]
+        norm_ihsg = (ihsg_df["Close"] / base_ihsg) * price_df["Close"].iloc[0]
+        fig.add_trace(go.Scatter(x=ihsg_df.index, y=norm_ihsg, name="IHSG (Relatif)", line=dict(color="rgba(148,163,184,0.3)", width=1.5, dash="dot")))
+
+    # OHLC
     fig.add_trace(go.Candlestick(x=price_df.index, open=price_df["Open"], high=price_df["High"], low=price_df["Low"], close=price_df["Close"], name="OHLC", increasing_line_color="#4ade80", decreasing_line_color="#f87171"))
+    
+    # v12: Fibonacci Shading (Premium Overlay)
+    if fibonacci and fibonacci.get("fib_0"):
+        # Shading between 61.8% and 38.2% (Golden Zone)
+        fig.add_hrect(y0=fibonacci["fib_618"], y1=fibonacci["fib_382"], fillcolor="rgba(99,102,241,0.05)", line_width=0, annotation_text="Golden Zone", annotation_position="inside top left")
+        fig.add_hline(y=fibonacci["fib_500"], line_dash="dash", line_color="rgba(96,165,250,0.3)", annotation_text="Fib 50%")
+    
     mac = f"MA_{TECHNICAL_MA_PERIOD}"
     if mac in tech_df.columns: fig.add_trace(go.Scatter(x=tech_df.index, y=tech_df[mac], name=f"MA{TECHNICAL_MA_PERIOD}", line=dict(color="#fbbf24", width=2)))
     if "MA_50" in tech_df.columns: fig.add_trace(go.Scatter(x=tech_df.index, y=tech_df["MA_50"], name="MA50", line=dict(color="#38bdf8", width=1.5, dash="dot")))
@@ -578,6 +630,22 @@ with tab5:
         with mc1: st.markdown(f"<div class='pc'><div class='pl'>Skema Bearish (10%)</div><div class='pv red'>Rp {monte_carlo.get('final_worst',0):,.0f}</div></div>", unsafe_allow_html=True)
         with mc2: st.markdown(f"<div class='pc'><div class='pl'>Skema Wajar (50%)</div><div class='pv purp' style='color:#a78bfa;'>Rp {monte_carlo.get('final_median',0):,.0f}</div></div>", unsafe_allow_html=True)
         with mc3: st.markdown(f"<div class='pc'><div class='pl'>Skema Bullish (90%)</div><div class='pv grn'>Rp {monte_carlo.get('final_best',0):,.0f}</div></div>", unsafe_allow_html=True)
+
+    # v12: Seasonality Heatmap
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<div class='sh'>🗓️ Histori Musiman (Rata-rata Return Bulanan 5 Thn)</div>", unsafe_allow_html=True)
+    if not seasonal_data.empty:
+        s_cols = st.columns(6)
+        months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        for i, m_name in enumerate(months):
+            m_idx = i + 1
+            ret = seasonal_data.get(m_idx, 0)
+            with s_cols[i % 6]:
+                rect_clr = "rgba(74,222,128,0.15)" if ret > 0 else "rgba(248,113,113,0.15)"
+                text_clr = "#4ade80" if ret > 0 else "#f87171"
+                st.markdown(f"<div style='background:{rect_clr};border-radius:8px;padding:10px;text-align:center;border:1px solid {text_clr}40;'><div style='font-size:0.75rem;color:#94a3b8;font-weight:600;'>{m_name}</div><div style='font-size:1.1rem;font-weight:800;color:{text_clr};'>{ret:+.2f}%</div></div>", unsafe_allow_html=True)
+    else:
+        st.info("📭 Data musiman tidak tersedia.")
 
 # =================== TAB 6: AI ===================
 with tab6:

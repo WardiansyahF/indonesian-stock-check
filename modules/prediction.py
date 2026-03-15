@@ -7,6 +7,8 @@ best entry calculation with multiple scenarios.
 
 import numpy as np
 import pandas as pd
+import streamlit as st
+import yfinance as yf
 from datetime import timedelta
 
 
@@ -705,3 +707,43 @@ def get_prediction_summary(df: pd.DataFrame, days: int = 30) -> dict:
         "support_resistance": get_support_resistance(df),
         "prediction_days": days
     }
+
+@st.cache_data(ttl=3600)
+def get_seasonal_returns(ticker: str) -> pd.Series:
+    """v12: Menghitung rata-rata return bulanan historis (5 tahun) dengan caching."""
+    try:
+        # Ambil data 5 tahun
+        df = yf.download(ticker, period="5y", interval="1d", progress=False)
+        if df.empty: return pd.Series(dtype=float)
+        
+        # v12: Handle MultiIndex safely
+        if isinstance(df.columns, pd.MultiIndex):
+            if "Close" in df.columns.levels[0]:
+                close = df["Close"].iloc[:, 0] # Ambil kolom pertama dari Close
+            else:
+                return pd.Series(dtype=float)
+        else:
+            if "Close" in df.columns:
+                close = df["Close"]
+            else:
+                return pd.Series(dtype=float)
+            
+        # v12: Safe Resample
+        try:
+            monthly = close.resample("ME").last()
+        except:
+            monthly = close.resample("M").last()
+            
+        returns = monthly.pct_change().dropna()
+        if returns.empty: return pd.Series(dtype=float)
+        
+        # Kelompokkan berdasarkan Bulan (1-12)
+        returns_df = returns.to_frame()
+        val_col = returns_df.columns[0]
+        returns_df["Month"] = returns_df.index.month
+        
+        # Mean per month
+        avg_returns = returns_df.groupby("Month")[val_col].mean() * 100
+        return avg_returns
+    except Exception as e:
+        return pd.Series(dtype=float)
