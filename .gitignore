@@ -1,0 +1,18 @@
+# Environment variables (WAJIB di-ignore, jangan sampai API Key bocor!)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Streamlit
+.streamlit/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

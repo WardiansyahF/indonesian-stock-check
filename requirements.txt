@@ -1,0 +1,8 @@
+streamlit>=1.30.0
+yfinance>=0.2.36
+pandas_ta>=0.3.14b1
+google-generativeai>=0.4.0
+groq>=0.4.0
+python-dotenv>=1.0.0
+plotly>=5.18.0
+requests>=2.31.0
