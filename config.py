@@ -9,13 +9,26 @@ di banyak tempat — semua dikumpulkan di satu titik untuk traceability.
 import os
 from dotenv import load_dotenv
 
+import streamlit as st
+
 # Load .env file jika ada (untuk development lokal)
 load_dotenv()
 
 # ============================================================
-# API KEYS
+# API KEYS (Securely pulled from Streamlit Secrets or Env)
 # ============================================================
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+def get_secret(key, default=""):
+    """DQC: Mengambil secret dari Streamlit Cloud atau environment variable."""
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except:
+        pass
+    return os.getenv(key, default)
+
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 # ============================================================
 # DEFAULT SETTINGS

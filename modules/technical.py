@@ -201,7 +201,7 @@ def get_technical_signals(df: pd.DataFrame) -> dict:
     return result
 
 
-def get_advanced_signals(df: pd.DataFrame) -> dict:
+def get_advanced_signals(df: pd.DataFrame, intraday_df: pd.DataFrame = None) -> dict:
     """
     Interpretasi sinyal dari indikator lanjutan.
 
@@ -224,6 +224,7 @@ def get_advanced_signals(df: pd.DataFrame) -> dict:
             "composite_score": 50,
             "composite_label": "⚪ NEUTRAL",
             "composite_color": "gray",
+            "intraday_pulse": {"signal": "N/A", "color": "gray"},
         }
 
     latest = df.iloc[-1]
@@ -556,6 +557,24 @@ def get_advanced_signals(df: pd.DataFrame) -> dict:
                 vpa_result["color"] = "gray"
                 scores.append(45)
 
+    # --- v11: Intraday Pulse (Short-term 5m Momentum) ---
+    intra_result = {"signal": "N/A", "color": "gray"}
+    if intraday_df is not None and not intraday_df.empty:
+        # Check trend of the last 12 bars (1 hour of 5m data)
+        i_close = intraday_df["Close"]
+        if len(i_close) >= 12:
+            i_ema5 = ta.ema(i_close, length=5)
+            i_ema20 = ta.ema(i_close, length=20)
+            if i_ema5 is not None and i_ema20 is not None:
+                curr_5 = i_ema5.iloc[-1]
+                curr_20 = i_ema20.iloc[-1]
+                if curr_5 > curr_20:
+                    intra_result = {"signal": "🚀 Bullish (Intraday)", "color": "green"}
+                    scores.append(75)
+                else:
+                    intra_result = {"signal": "🥀 Bearish (Intraday)", "color": "red"}
+                    scores.append(25)
+
     # --- Composite Score ---
     if scores:
         composite = round(sum(scores) / len(scores), 1)
@@ -590,6 +609,7 @@ def get_advanced_signals(df: pd.DataFrame) -> dict:
         "ema_cross": ema_cross_result,
         "vpa": vpa_result,
         "macd_divergence": macd_div_result,
+        "intraday_pulse": intra_result,
         "composite_score": composite,
         "composite_label": composite_label,
         "composite_color": composite_color,

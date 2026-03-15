@@ -13,6 +13,7 @@ from datetime import datetime
 from config import (
     APP_TITLE, APP_ICON, APP_LAYOUT, DEFAULT_TICKER, DEFAULT_PERIOD,
     TECHNICAL_RSI_PERIOD, TECHNICAL_MA_PERIOD, PREDICTION_DAYS,
+    GROQ_API_KEY, GROQ_DEFAULT_MODEL
 )
 from modules.fundamental import (
     get_stock_info, get_financial_ratios,
@@ -94,8 +95,8 @@ with st.sidebar:
         help="Format: KODE.JK", disabled=(app_mode != "Analisa Lengkap (1 Saham)")).upper().strip()
     if ticker and not ticker.endswith(".JK") and app_mode == "Analisa Lengkap (1 Saham)":
         st.warning("💡 Ticker IHSG harus diakhiri `.JK`")
-    period = st.selectbox("📅 Periode Data", options=["1d","1mo","3mo","6mo","1y","2y","5y"], index=3,
-        format_func=lambda x: {"1d":"1 Hari (Intraday)","1mo":"1 Bulan","3mo":"3 Bulan","6mo":"6 Bulan","1y":"1 Tahun","2y":"2 Tahun","5y":"5 Tahun"}[x],
+    period = st.selectbox("📅 Periode Data", options=["1mo","3mo","6mo","1y","2y","5y"], index=3,
+        format_func=lambda x: {"1mo":"1 Bulan","3mo":"3 Bulan","6mo":"6 Bulan","1y":"1 Tahun","2y":"2 Tahun","5y":"5 Tahun"}[x],
         disabled=(app_mode != "Analisa Lengkap (1 Saham)"))
     pred_days = st.slider("🔮 Hari Prediksi", min_value=7, max_value=90, value=PREDICTION_DAYS, step=7,
         disabled=(app_mode != "Analisa Lengkap (1 Saham)"))
@@ -106,20 +107,13 @@ with st.sidebar:
         st.rerun()
     st.caption(f"🕐 Last refresh: {st.session_state.get('last_refresh', 'Auto')}")
     st.markdown("---")
-    st.markdown("### 🤖 AI Assistant")
-    ai_provider = st.selectbox("🧠 Provider", ["Groq", "Gemini"], index=0,
-        help="Groq: 30 RPM gratis. Gemini: support PDF.")
-    if ai_provider == "Groq":
-        groq_model_sel = st.selectbox("📦 Model", get_groq_model_list(), index=0)
-        groq_model_id = GROQ_MODELS[groq_model_sel]
-    else:
-        groq_model_sel = None
-        groq_model_id = None
-    ai_key = st.text_input(
-        f"{'Groq' if ai_provider == 'Groq' else 'Gemini'} API Key",
-        type="password", placeholder="Masukkan API Key...",
-        help="Groq: console.groq.com/keys | Gemini: aistudio.google.com/app/apikey")
-    uploaded_pdf = st.file_uploader("📄 Upload LK (PDF)", type=["pdf"])
+    st.markdown("### 🤖 AI Assistant (Groq)")
+    st.info("💡 Mode Deploy: AI menggunakan Llama-3.3-70B untuk analisis super cepat.")
+    ai_provider = "Groq"
+    groq_model_sel = "Llama 3.3 70B (Best)"
+    groq_model_id = GROQ_DEFAULT_MODEL
+    ai_key = GROQ_API_KEY
+    uploaded_pdf = None
     st.markdown("---")
     st.markdown("<div style='text-align:center;color:#64748b;font-size:0.75rem;'>Stock Analyzer v5.0<br>DQC + IMK</div>", unsafe_allow_html=True)
 
@@ -133,11 +127,18 @@ def fetch_all(t, p):
     info = get_stock_info(t)
     ratios = get_financial_ratios(t)
     financials = get_financials_summary(t)
-    # 1-Day support: use 5m interval
-    interval = "5m" if p == "1d" else "1d"
-    price_df = get_price_history(t, p, interval=interval)
+    
+    # Primary price data (selected period)
+    price_df = get_price_history(t, p)
+    
+    # v11: Always fetch 1-day intraday (5m) for internal signals
+    try:
+        intraday_df = get_price_history(t, "1d", interval="5m")
+    except:
+        intraday_df = pd.DataFrame()
+        
     news = get_stock_news(t, max_items=5)
-    return info, ratios, financials, price_df, news
+    return info, ratios, financials, price_df, intraday_df, news
 
 # ============================================================
 # MODE SCREENER (MULTIPLE STOCKS)
@@ -272,7 +273,7 @@ if not ticker:
 
 with st.spinner(f"⏳ Mengambil data **{ticker}**..."):
     try:
-        info, ratios, financials, price_df, news_items = fetch_all(ticker, period)
+        info, ratios, financials, price_df, intraday_df, news_items = fetch_all(ticker, period)
     except Exception as e:
         st.error(f"❌ Gagal mengambil data: {str(e)}")
         st.stop()
@@ -284,14 +285,14 @@ if price_df.empty:
 tech_df = calculate_indicators(price_df.copy())
 tech_df = calculate_advanced_indicators(tech_df)
 signals = get_technical_signals(tech_df)
-adv_signals = get_advanced_signals(tech_df)
+adv_signals = get_advanced_signals(tech_df, intraday_df=intraday_df)
 prediction = get_prediction_summary(price_df, pred_days)
 monte_carlo = predict_monte_carlo(price_df, pred_days, simulations=1000)
 trading_targets = get_trading_targets(price_df, signals, adv_signals)
-confirmed = get_confirmed_prediction(prediction["linear"], signals, adv_signals)
+confirmed = get_confirmed_prediction(prediction.get("linear", {}), signals, adv_signals)
 entry_scenarios = get_entry_scenarios(price_df, signals, adv_signals)
 fibonacci = get_fibonacci_levels(price_df)
-unified_conf = get_unified_confidence(prediction["linear"], monte_carlo)
+unified_conf = get_unified_confidence(prediction.get("linear", {}), monte_carlo)
 
 # Build technical context string for AI
 tech_context_lines = [
@@ -304,6 +305,7 @@ tech_context_lines = [
     f"OBV (Akumulasi): {adv_signals.get('obv',{}).get('signal','N/A')}",
     f"EMA 5/20 Momentum: {adv_signals.get('ema_cross',{}).get('signal','N/A')}",
     f"VPA (Volume Price): {adv_signals.get('vpa',{}).get('signal','N/A')}",
+    f"Intraday Pulse (5m): {adv_signals.get('intraday_pulse',{}).get('signal','N/A')}",
     f"Bollinger Position: {adv_signals['bollinger']['position']}% — {adv_signals['bollinger']['signal']}",
     f"Candlestick Pattern: {adv_signals.get('candlestick',{}).get('pattern','N/A')} — {adv_signals.get('candlestick',{}).get('signal','N/A')}",
     f"MA50/MA200: {adv_signals['golden_cross']['signal']}",
@@ -408,6 +410,7 @@ with tab3:
             ("RSI (14)", signals.get("rsi_value","N/A"), signals.get("rsi_signal","N/A")),
             ("MA20 Trend", signals.get("ma_value","N/A"), signals.get("ma_signal","N/A")),
             ("EMA 5/20 Momentum", f"EMA5:{adv_signals['ema_cross']['ema5']} vs EMA20:{adv_signals['ema_cross']['ema20']}", adv_signals["ema_cross"]["signal"]),
+            ("Intraday Pulse (5m)", "Price Trend (Recent 1H)", adv_signals.get("intraday_pulse", {}).get("signal", "N/A")),
             ("VPA (Vol-Price Analysis)", "Price vs Volume MA20", adv_signals["vpa"]["signal"]),
             ("MACD Divergence", "Momentum vs Price", adv_signals["macd_divergence"]["signal"]),
             ("Candlestick (Master)", adv_signals.get("candlestick",{}).get("pattern","N/A"), adv_signals.get("candlestick",{}).get("signal","N/A")),
@@ -483,8 +486,10 @@ with tab5:
     st.markdown("<div class='sh'>🔮 Prediksi Harga (Dikonfirmasi Teknikal)</div>", unsafe_allow_html=True)
     st.markdown("""<div class='ib' style='border-color:rgba(251,191,36,0.3);background:linear-gradient(135deg,rgba(120,53,15,0.2),rgba(146,64,14,0.1));'>⚠️ <strong>Disclaimer:</strong> Prediksi statistik + konfirmasi teknikal. BUKAN jaminan.</div>""", unsafe_allow_html=True)
 
-    lin = prediction["linear"]; ma_proj = prediction["ma_projection"]; sr_data = prediction["support_resistance"]
-    poly = prediction["poly"]
+    lin = prediction.get("linear", {})
+    ma_proj = prediction.get("ma_projection", {"predicted_prices": pd.DataFrame()})
+    sr_data = prediction.get("support_resistance", {})
+    poly = prediction.get("poly", {})
     cf = confirmed
     fd = cf.get('final_direction', cf.get('prediction_direction','N/A'))
     pd_raw = cf.get('prediction_direction','N/A')
@@ -570,39 +575,21 @@ with tab5:
         st.plotly_chart(fmc, use_container_width=True)
         
         mc1, mc2, mc3 = st.columns(3)
-        with mc1: st.markdown(f"<div class='pc'><div class='pl'>Skema Bearish (10%)</div><div class='pv red'>Rp {monte_carlo['final_worst']:,.0f}</div></div>", unsafe_allow_html=True)
-        with mc2: st.markdown(f"<div class='pc'><div class='pl'>Skema Wajar (50%)</div><div class='pv purp' style='color:#a78bfa;'>Rp {monte_carlo['final_median']:,.0f}</div></div>", unsafe_allow_html=True)
-        with mc3: st.markdown(f"<div class='pc'><div class='pl'>Skema Bullish (90%)</div><div class='pv grn'>Rp {monte_carlo['final_best']:,.0f}</div></div>", unsafe_allow_html=True)
+        with mc1: st.markdown(f"<div class='pc'><div class='pl'>Skema Bearish (10%)</div><div class='pv red'>Rp {monte_carlo.get('final_worst',0):,.0f}</div></div>", unsafe_allow_html=True)
+        with mc2: st.markdown(f"<div class='pc'><div class='pl'>Skema Wajar (50%)</div><div class='pv purp' style='color:#a78bfa;'>Rp {monte_carlo.get('final_median',0):,.0f}</div></div>", unsafe_allow_html=True)
+        with mc3: st.markdown(f"<div class='pc'><div class='pl'>Skema Bullish (90%)</div><div class='pv grn'>Rp {monte_carlo.get('final_best',0):,.0f}</div></div>", unsafe_allow_html=True)
 
 # =================== TAB 6: AI ===================
 with tab6:
-    prov_name = f"Groq ({groq_model_sel})" if ai_provider == "Groq" else "Gemini"
-    prov_key = "groq" if ai_provider == "Groq" else "gemini"
-    st.markdown(f"<div class='sh'>🤖 AI Analysis — {prov_name}</div>", unsafe_allow_html=True)
-    if not ai_key:
-        hu = "https://console.groq.com/keys" if prov_key == "groq" else "https://aistudio.google.com/app/apikey"
-        st.markdown(f"<div class='ib'><strong>🔑 Cara:</strong><br>1. API Key GRATIS di <a href='{hu}' target='_blank' style='color:#60a5fa;'>{prov_name.split('(')[0].strip()}</a><br>2. Masukkan di sidebar → Klik analisis<br><br>{'<strong>Groq Free:</strong> 30 RPM, 14.400 req/hari' if prov_key == 'groq' else '<strong>Gemini:</strong> 15 RPM'}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sh'>🤖 AI Analysis — Groq (Llama 3.3 70B)</div>", unsafe_allow_html=True)
     st.markdown("### ⚡ Quick Analysis")
-    if st.button("🚀 Jalankan Quick Analysis", type="primary", use_container_width=True):
-        if not ai_key: st.warning("⚠️ Masukkan API Key.")
-        else:
-            with st.spinner(f"🧠 {prov_name} menganalisis (Fundamental + Teknikal + Prediksi)..."):
-                result = quick_analysis(ticker, ratios, api_key=ai_key, provider=prov_key,
-                    model_name=groq_model_id if groq_model_id else "llama-3.3-70b-versatile",
-                    technical_context=technical_context_str)
-            st.markdown(result)
+    if st.button("🚀 Jalankan Analisis Lengkap", type="primary", use_container_width=True):
+        with st.spinner(f"🧠 Menganalisis {ticker} (Fundamental + Teknikal + Prediksi)..."):
+            result = quick_analysis(ticker, ratios, api_key=GROQ_API_KEY, provider="groq",
+                model_name=GROQ_DEFAULT_MODEL, technical_context=technical_context_str)
+        st.markdown(result)
     st.markdown("---")
-    st.markdown("### 📄 Analisis PDF")
-    if prov_key == "groq":
-        st.info("💡 PDF hanya didukung Gemini. Pilih 'Gemini' di sidebar.")
-    if uploaded_pdf:
-        st.success(f"✅ {uploaded_pdf.name} ({uploaded_pdf.size/1024:.1f} KB)")
-        if st.button("🔬 Analisis PDF", type="primary", use_container_width=True):
-            if not ai_key: st.warning("⚠️ Masukkan API Key.")
-            else:
-                with st.spinner("🧠 Membaca PDF..."): result = analyze_pdf_report(uploaded_pdf.read(), ticker, api_key=ai_key, provider=prov_key)
-                st.markdown(result)
-    elif prov_key != "groq": st.info("👈 Upload PDF di sidebar.")
+    st.caption("💡 Mode Deploy: PDF Analysis dinonaktifkan sementara untuk stabilitas.")
 
 # =================== TAB 7: NEWS ===================
 with tab7:
